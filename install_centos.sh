@@ -96,11 +96,10 @@ logoutput: /var/log/sockd.log
 
 client pass {
     from: 0/0  to: 0/0
-    log: connect disconnect
 }
 client block {
     from: 0/0 to: 0/0
-    log: connect error
+    log: error
 }
 EOF
     fi
@@ -139,11 +138,10 @@ pass {
         from: 0.0.0.0/0 to: 0.0.0.0/0
         protocol: tcp udp
         method: pam
-        log: connect disconnect
 }
 block {
         from: 0.0.0.0/0 to: 0.0.0.0/0
-        log: connect error
+        log: error
 }
 
 EOF
@@ -152,11 +150,10 @@ EOF
 socks pass {
     from: 0/0 to: 0/0
     socksmethod: pam.username
-    log: connect disconnect
 }
 socks block {
     from: 0/0 to: 0/0
-    log: connect error
+    log: error
 }
 
 EOF
