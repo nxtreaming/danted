@@ -307,7 +307,10 @@ if [ "$INSTALL_FROM" == "compile" ] || [ "$VERSION" != "1.3.2" ];then
     if [ "$VERSION" == "1.3.2" ];then
        compile_args='--disable-preload'
     else
-       compile_args=''
+       # GSSAPI is not used by the generated PAM/username configuration.
+       # Disable it so Dante does not allocate its larger GSSAPI-sized I/O
+       # buffers for every io-child process.  Keep 64 KiB for max UDP packets.
+       compile_args='--without-gssapi --with-bufsize=65536'
     fi
 
     download_file "source/dante-${VERSION}.tar.gz" "dante-${VERSION}.tar.gz"
