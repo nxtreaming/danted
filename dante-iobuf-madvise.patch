@@ -1,0 +1,142 @@
+--- a/include/common.h
++++ b/include/common.h
+@@ -2200,7 +2200,13 @@
+                             * # of bytes we have already read from socket and
+                             * should ignore.
+                             */
+-#endif /* SOCKS_CLIENT */
++#else /* !SOCKS_CLIENT */
++      size_t   peaklen;    /*
++                            * max # of bytes (len + enclen) held in buf since
++                            * allocation.  Bytes of buf past this have not
++                            * been written to.
++                            */
++#endif /* !SOCKS_CLIENT */
+    } info[2];
+ 
+    int      stype;         /* socket type; tcp or udp                         */
+--- a/lib/iobuf.c
++++ b/lib/iobuf.c
+@@ -54,6 +54,13 @@
+  */
+ 
+ #if !SOCKS_CLIENT
++static void socks_releasebuffermem(iobuffer_t *iobuf, const whichbuf_t which);
++/*
++ * Returns to the kernel the memory pages of buffer "which" in "iobuf"
++ * that have been written to since the buffer was allocated, and resets
++ * the peak-usage counter.  Contents of the buffer are undefined afterwards.
++ */
++
+ /*
+  * - Each negotiate child client can use one iobuffer for control.
+  * - Each request child and io child client can use one iobuffer for
+@@ -396,9 +403,11 @@
+    iobuf->info[which].len = iobuf->info[which].enclen = 0;
+ #if SOCKS_CLIENT
+    iobuf->info[which].readalready = 0;
+-#endif /* SOCKS_CLIENT */
+ 
+    bzero(&iobuf->buf[which], sizeof(iobuf->buf[which]));
++#else /* !SOCKS_CLIENT */
++   socks_releasebuffermem(iobuf, which);
++#endif /* !SOCKS_CLIENT */
+ }
+ 
+ iobuffer_t *
+@@ -474,7 +483,16 @@
+    iobuffer_t *iobuf;
+ {
+ 
++#if SOCKS_CLIENT
+    bzero(iobuf, sizeof(*iobuf));
++#else /* !SOCKS_CLIENT */
++   /*
++    * buf is not cleared, so that its pages are only faulted in if data
++    * actually gets buffered.  Nothing reads buf past len + enclen.
++    */
++   bzero(iobuf->info, sizeof(iobuf->info));
++#endif /* !SOCKS_CLIENT */
++
+    iobuf->s         = fd;
+    iobuf->stype     = stype;
+    iobuf->allocated = 1;
+@@ -527,6 +545,11 @@
+          (unsigned long)socks_bytesinbuffer(s, WRITE_BUF, 0),
+          (unsigned long)socks_bytesinbuffer(s, WRITE_BUF, 1));
+ 
++#if !SOCKS_CLIENT
++      socks_releasebuffermem(&iobufv[lastfreei], READ_BUF);
++      socks_releasebuffermem(&iobufv[lastfreei], WRITE_BUF);
++#endif /* !SOCKS_CLIENT */
++
+       iobufv[lastfreei].allocated = 0;
+       return;
+    }
+@@ -614,6 +637,12 @@
+       iobuf->info[which].enclen += toadd;
+    else
+       iobuf->info[which].len    += toadd;
++
++#if !SOCKS_CLIENT
++   iobuf->info[which].peaklen
++   = MAX(iobuf->info[which].peaklen,
++         iobuf->info[which].len + iobuf->info[which].enclen);
++#endif /* !SOCKS_CLIENT */
+ 
+    return toadd;
+ }
+@@ -772,4 +801,53 @@
+             rc = -1;
+ 
+    return rc;
++}
++
++#if !SOCKS_CLIENT
++static void
++socks_releasebuffermem(iobuf, which)
++   iobuffer_t *iobuf;
++   const whichbuf_t which;
++{
++   const char *function = "socks_releasebuffermem()";
++   const uintptr_t pagemask = (uintptr_t)sockscf.state.pagesize - 1;
++   const uintptr_t bufstart = (uintptr_t)iobuf->buf[which];
++   uintptr_t start, end, limit;
++
++   if (iobuf->info[which].peaklen == 0)
++      return;
++
++   /*
++    * Only pages lying entirely within buf[which] can be released, as the
++    * partial pages at either end are shared with other data.
++    */
++   start = (bufstart + pagemask) & ~pagemask;
++   limit = (bufstart + sizeof(iobuf->buf[which])) & ~pagemask;
++   end   = MIN((bufstart + iobuf->info[which].peaklen + pagemask) & ~pagemask,
++               limit);
++
++#ifdef MADV_DONTNEED
++   if (end > start) {
++      static int warned;
++      const int errno_s = errno;
++
++      if (madvise((void *)start, (size_t)(end - start), MADV_DONTNEED) != 0) {
++         if (!warned) {
++            swarn("%s: madvise(MADV_DONTNEED) of %lu bytes failed; "
++                  "unused iobuffer memory will not be returned to the kernel "
++                  "(further failures are not logged)",
++                  function, (unsigned long)(end - start));
++            warned = 1;
++         }
++         else
++            slog(LOG_DEBUG, "%s: madvise(MADV_DONTNEED) of %lu bytes failed: %s",
++                 function, (unsigned long)(end - start), strerror(errno));
++      }
++
++      errno = errno_s;
++   }
++#endif /* MADV_DONTNEED */
++
++   iobuf->info[which].peaklen = 0;
+ }
++#endif /* !SOCKS_CLIENT */
