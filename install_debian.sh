@@ -19,6 +19,9 @@ BIN_PATH="/etc/danted/sbin/sockd"
 CONFIG_PATH="/etc/danted/sockd.conf"
 BIN_SCRIPT="/etc/init.d/sockd"
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+IOBUF_PATCH="${SCRIPT_DIR}/dante-iobuf-madvise.patch"
+
 DEFAULT_IPADDR=$(ip addr | grep 'inet ' | grep -Ev 'inet 127|inet 192\.168' | \
             sed "s/[[:space:]]*inet \([0-9.]*\)\/.*/\1/")
 RUN_OPTS=$*
@@ -189,6 +192,21 @@ download_file(){
     [ -f "${filename}" ] && [ -n "${execute}" ] && chmod +x "${filename}"
 }
 
+apply_iobuf_patch(){
+    local patch_file="${IOBUF_PATCH}"
+
+    if [ ! -s "${patch_file}" ];then
+        echo "[Warning] ${patch_file} not found, build without it."
+        return 1
+    fi
+
+    if patch -p1 --forward --dry-run < "${patch_file}" > /dev/null 2>&1;then
+        patch -p1 --forward < "${patch_file}" && echo "[INFO] ${patch_file} applied."
+    else
+        echo "[Warning] ${patch_file} can not be applied to dante-${VERSION}, build without it."
+    fi
+}
+
 ##################------------Menu()---------#####################################
 echo "Current Options: $RUN_OPTS"
 for _PARAMETER in $RUN_OPTS
@@ -280,7 +298,7 @@ download_file "script/sockd" "${BIN_SCRIPT}" "execute"
 
 ########################################## DEBIAN 8 ####################################################################
 apt-get update
-apt-get install unzip apache2-utils gcc g++ make libpam-dev libwrap0-dev -y
+apt-get install unzip apache2-utils gcc g++ make patch libpam-dev libwrap0-dev -y
 
 mkdir -p /tmp/danted && rm /tmp/danted/* -rf && cd /tmp/danted || exit
 
@@ -321,6 +339,9 @@ if [ "$INSTALL_FROM" == "compile" ] || [ "$VERSION" != "1.3.2" ];then
         # PATCH CONFIG
         download_file "source/config.guess" "config.guess"
         download_file "source/config.sub" "config.sub"
+
+        # PATCH SOURCE: return idle iobuffer pages to the kernel (1.4.x only)
+        [ "$VERSION" != "1.3.2" ] && apply_iobuf_patch
 
         ./configure --with-sockd-conf=${CONFIG_PATH} --prefix=${BIN_DIR} ${compile_args} && make -j && make install
     fi
